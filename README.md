@@ -2,7 +2,7 @@
 
 LanManVan is a **Metasploit-like framework** built in Go, designed to make it easy to create, manage, and execute modules. The framework supports modules written in **Python3** and **Bash**, allowing you to create powerful security tools with minimal effort.
 
-### Partly VibeCoded: 70% Human written code, 30% AI!
+### Partly VibeCoded: 65% Human written code, 35% AI!
 
 ## Features
 
@@ -388,3 +388,9 @@ For issues, questions, or contributions, feel free to reach out!
 ---
 
 **Happy Hacking! 🚀**
+
+## Contributors
+
+<a href="https://github.com/hmZa-Sfyn/lanmanvan/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=hmZa-Sfyn/lanmanvan" />
+</a>
