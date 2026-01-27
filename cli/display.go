@@ -23,24 +23,26 @@ func (cli *CLI) PrintHelp() {
 		name string
 		desc string
 	}{
-		{"help, h, ?", "Show this help message, aliases: h, ?"},
-		{"list, ls", "List all modules, aliases: ls"},
-		{"search <keyword>", "Search modules by name/tag, example: search network"},
-		{"info <module>", "Show detailed module information, example: info network"},
-		{"<module>!", "Quick show module options and usage, example: network!"},
-		{"run <module> [args]", "Execute a module with arguments, example: run network ip="},
-		{"<module> [args]", "Shorthand: <module> arg_key=value, example: network ip=192.168.1.1"},
-		{"<module> arg_key = value", "Format with spaces (alternative), example: network ip = 192.168.1.1"},
-		{"env, envs", "Show all global environment variables, aliases: envs"},
-		{"builtins", "Show all 30+ builtin functions with examples"},
-		{"key=value", "Set global environment variable (persistent), example: timeout=10"},
-		{"key=?", "View global environment variable value, example: timeout=?"},
-		{"create <name> [type]", "Create a new module (python/bash), example: create mymodule python"},
-		{"edit <module>", "Edit module files, example: edit mymodule"},
-		{"delete <module>", "Delete a module, example: delete mymodule"},
+		// ──────────────────────────────
+		// Core Commands
+		// ──────────────────────────────
+		{"help, h, ?", "Show this help message (aliases: h, ?)"},
+		{"list, ls", "List all available modules (alias: ls)"},
+		{"search <keyword>", "Search modules by name/tag/description (ex: search network)"},
+		{"info <module>", "Show detailed info about a module (ex: info network)"},
+		{"<module>!", "Quick view module options & usage (ex: network!)"},
+		{"run <module> [args...]", "Execute module with arguments (ex: run network ip=192.168.1.1)"},
+		{"<module> [args...]", "Shorthand run: module arg=value (ex: network ip=192.168.1.1)"},
+		{"env, envs", "Display all global environment variables (alias: envs)"},
+		{"key=value", "Set persistent global environment variable (ex: timeout=30)"},
+		{"key=?", "View value of a global variable (ex: timeout=?)"},
+		{"create <name> [python|bash]", "Create new module (ex: create exploit python)"},
+		{"edit <module>", "Edit module source code (ex: edit myexploit)"},
+		{"delete, rm <module>", "Delete a module (ex: delete myexploit)"},
 		{"history", "Show command history"},
-		{"clear", "Clear screen, aliases: cls"},
-		{"exit, quit, q", "Exit framework, aliases: quit, q"},
+		{"clear, cls", "Clear the terminal screen (alias: cls)"},
+		{"refresh, reload", "Reload/refresh all modules from disk"},
+		{"exit, quit, q", "Exit the framework (aliases: quit, q)"},
 	}
 
 	for _, cmd := range commands {
@@ -475,119 +477,43 @@ func (cli *CLI) PrintHistory() {
 	fmt.Println()
 }
 
-// PrintBuiltins prints all available builtin functions with detailed info
-func (cli *CLI) PrintBuiltins() {
-	fmt.Println()
-	fmt.Println(core.NmapBox("BUILTIN FUNCTIONS (60+) - DETAILED REFERENCE"))
-	fmt.Println()
+func HighlightPurple(text string, keyword string) string {
 
-	builtins := cli.builtins.GetAll()
-
-	// Group builtins by category
-	categories := map[string][]*BuiltinFunction{
-		"File System":        {},
-		"Hashing":            {},
-		"Encoding":           {},
-		"Strings":            {},
-		"Network Validation": {},
-		"Network":            {},
-		"Math":               {},
-		"System":             {},
-		"Utilities":          {},
+	if keyword == "" {
+		return text
 	}
 
-	// Categorize builtins
-	for _, fn := range builtins {
-		switch fn.Name {
-		case "pwd", "cd", "ls", "mkdir", "rm", "cp", "mv", "cat", "exists", "filesize":
-			categories["File System"] = append(categories["File System"], fn)
-		case "md5", "sha1", "sha256", "hash", "checksum", "crc32":
-			categories["Hashing"] = append(categories["Hashing"], fn)
-		case "base64", "hex", "url", "json", "csv", "xml", "ascii", "unicode":
-			categories["Encoding"] = append(categories["Encoding"], fn)
-		case "strlen", "toupper", "tolower", "reverse", "trim", "substr", "replace", "split", "startswith", "endswith", "contains", "repeat":
-			categories["Strings"] = append(categories["Strings"], fn)
-		case "isipv4", "isipv6", "isemail", "isurl", "ismac", "isdomain", "ispath", "isport", "iscdr", "getcidr", "getiprange", "ip2int", "int2ip", "reverseip", "parseurl":
-			categories["Network Validation"] = append(categories["Network Validation"], fn)
-		case "ping", "nslookup", "ipaddr", "gethostbyname", "getipversion", "iplookup", "getport", "getmac", "gateway", "getdns":
-			categories["Network"] = append(categories["Network"], fn)
-		case "calc", "abs", "min", "max", "sum", "avg", "random":
-			categories["Math"] = append(categories["Math"], fn)
-		case "whoami", "hostname", "date", "uname", "arch", "ostype", "uptime", "ps", "getenv", "which":
-			categories["System"] = append(categories["System"], fn)
-		default:
-			categories["Utilities"] = append(categories["Utilities"], fn)
+	// Find all occurrences (case-insensitive)
+	keywordLower := strings.ToLower(keyword)
+	textLower := strings.ToLower(text)
+
+	// Build the highlighted string
+	var result strings.Builder
+	lastIdx := 0
+
+	for {
+		idx := strings.Index(textLower[lastIdx:], keywordLower)
+		if idx == -1 {
+			result.WriteString(text[lastIdx:])
+			break
 		}
+
+		idx += lastIdx
+		// Add text before match
+		result.WriteString(text[lastIdx:idx])
+
+		// Add highlighted match (purple background)
+		match := text[idx : idx+len(keyword)]
+		result.WriteString(color.New(color.BgMagenta, color.FgWhite, color.Bold).Sprint(match))
+
+		lastIdx = idx + len(keyword)
 	}
 
-	// Display by category with detailed info
-	for _, category := range []string{"File System", "System", "Hashing", "Encoding", "Strings", "Network Validation", "Network", "Math", "Utilities"} {
-		fns := categories[category]
-		if len(fns) == 0 {
-			continue
-		}
-
-		fmt.Printf("   %s\n", color.CyanString(fmt.Sprintf("═ %s (%d) ═", category, len(fns))))
-
-		// Sort functions by name
-		sort.Slice(fns, func(i, j int) bool {
-			return fns[i].Name < fns[j].Name
-		})
-
-		for i, fn := range fns {
-			isLast := i == len(fns)-1
-			prefix := "   ├─ "
-			if isLast {
-				prefix = "   └─ "
-			}
-
-			// Print function name and short description
-			fmt.Printf("%s%s %s\n",
-				prefix,
-				color.GreenString(fmt.Sprintf("%-15s", fn.Name)),
-				fn.Description,
-			)
-
-			// Print detailed description if available
-			if fn.DetailedDesc != "" {
-				detailPrefix := "   │  "
-				if isLast {
-					detailPrefix = "      "
-				}
-				fmt.Printf("%s%s\n", detailPrefix, color.WhiteString(fn.DetailedDesc))
-
-				// Print examples if available
-				if len(fn.Examples) > 0 {
-					fmt.Printf("%s%s\n", detailPrefix, color.YellowString("Examples:"))
-					for j, example := range fn.Examples {
-						examplePrefix := "   │     ├─ "
-						if isLast && j == len(fn.Examples)-1 {
-							examplePrefix = "        └─ "
-						} else if isLast {
-							examplePrefix = "        ├─ "
-						} else if j == len(fn.Examples)-1 {
-							examplePrefix = "   │     └─ "
-						}
-						fmt.Printf("%s%s\n", examplePrefix, color.MagentaString(example))
-					}
-				}
-
-				if !isLast {
-					fmt.Println()
-				}
-			}
-		}
-		fmt.Println()
-	}
-
-	fmt.Println("   " + color.CyanString("═ Quick Reference ═"))
-	fmt.Println("   ├─ Call syntax:   " + color.YellowString("funcname(arg1, arg2, ...)"))
-	fmt.Println("   ├─ In module arg: " + color.YellowString("run module target=$(hostname)"))
-	fmt.Println("   ├─ Nested calls:  " + color.YellowString("echo($(sha256 password))"))
-	fmt.Println("   ├─ Variables:     " + color.YellowString("run module ip=$myip port=8080"))
-	fmt.Println("   └─ Quoted args:   " + color.YellowString("echo(\"hello world\")"))
-	fmt.Println()
+	return result.String()
 }
+
+// HighlightPurple highlights all occurrences of keyword in text with purple background.
+// If you don't have this function, use this simple version:
 
 // getTypeBadge returns a colored badge for module type
 func (cli *CLI) getTypeBadge(moduleType string) string {

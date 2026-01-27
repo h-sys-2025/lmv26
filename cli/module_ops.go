@@ -15,15 +15,14 @@ import (
 )
 
 // RunModule executes a module with provided arguments
+// RunModule executes a module with provided arguments
 func (cli *CLI) RunModule(moduleName string, args []string) {
-	// First, get the module to check for required args
 	module, err := cli.manager.GetModule(moduleName)
 	if err != nil {
 		core.PrintError(fmt.Sprintf("%v", err))
 		return
 	}
 
-	// Parse arguments with support for quoted strings
 	moduleArgs := make(map[string]string)
 	threads := 1
 	saveLog := false
@@ -41,59 +40,40 @@ func (cli *CLI) RunModule(moduleName string, args []string) {
 		}
 	}
 
-	// Merge global environment variables (command-line args take precedence)
 	for key, value := range cli.envMgr.GetAll() {
 		if _, exists := moduleArgs[key]; !exists {
 			moduleArgs[key] = value
 		}
 	}
 
-	// Check for required arguments
 	if module.Metadata != nil && len(module.Metadata.Required) > 0 {
-		missingArgs := []string{}
-		for _, required := range module.Metadata.Required {
-			if _, exists := moduleArgs[required]; !exists {
-				missingArgs = append(missingArgs, required)
+		missing := []string{}
+		for _, req := range module.Metadata.Required {
+			if _, ok := moduleArgs[req]; !ok {
+				missing = append(missing, req)
 			}
 		}
 
-		// If required arguments are missing, show usage info
-		if len(missingArgs) > 0 {
+		if len(missing) > 0 {
 			fmt.Println()
 			core.PrintWarning(fmt.Sprintf("Module '%s' requires arguments, skipping...", moduleName))
 			fmt.Println()
 			fmt.Println(core.NmapBox(fmt.Sprintf("MODULE: %s - USAGE", moduleName)))
 			fmt.Printf("   Description: %s\n\n", module.Metadata.Description)
-			fmt.Println("   Required Arguments:")
-			for _, opt := range missingArgs {
-				if optMeta, exists := module.Metadata.Options[opt]; exists {
-					fmt.Printf("      * %s (%s) - %s\n", opt, optMeta.Type, optMeta.Description)
-				}
-			}
 
-			if len(module.Metadata.Options) > 0 {
-				fmt.Println("\n   Optional Arguments:")
-				for optName, optMeta := range module.Metadata.Options {
-					isRequired := false
-					for _, req := range module.Metadata.Required {
-						if req == optName {
-							isRequired = true
-							break
-						}
-					}
-					if !isRequired {
-						fmt.Printf("      • %s (%s) - %s\n", optName, optMeta.Type, optMeta.Description)
-					}
+			fmt.Println("   Required Arguments:")
+			for _, opt := range missing {
+				if meta, ok := module.Metadata.Options[opt]; ok {
+					fmt.Printf("      * %s (%s) - %s\n", opt, meta.Type, meta.Description)
 				}
 			}
 
 			fmt.Printf("\n   Example Usage:\n")
-			fmt.Printf("      %s %s=%s save=1\n\n", moduleName, missingArgs[0], "value")
+			fmt.Printf("      %s %s=value\n\n", moduleName, missing[0])
 			return
 		}
 	}
 
-	// Enable file logging if requested
 	if saveLog {
 		if err := cli.logger.EnableFileLogging(moduleName); err != nil {
 			core.PrintWarning(fmt.Sprintf("Could not enable file logging: %v", err))
@@ -105,16 +85,19 @@ func (cli *CLI) RunModule(moduleName string, args []string) {
 
 	fmt.Println()
 	if threads > 1 {
-		core.PrintInfo(fmt.Sprintf("Executing module '%s' with %d threads...", core.Color("cyan", moduleName), threads))
+		core.PrintInfo(fmt.Sprintf(
+			"Executing module '%s' with %d threads...",
+			core.Color("cyan", moduleName), threads))
 	} else {
-		core.PrintInfo(fmt.Sprintf("Executing module '%s'...", core.Color("cyan", moduleName)))
+		core.PrintInfo(fmt.Sprintf(
+			"Executing module '%s'...",
+			core.Color("cyan", moduleName)))
 	}
 	if saveLog {
 		core.PrintSuccess(fmt.Sprintf("Output saved to: %s", cli.logger.GetFilePath()))
 	}
 	fmt.Println()
 
-	// Mark module as running
 	cli.startModuleExecution()
 	defer cli.stopModuleExecution()
 
@@ -133,7 +116,6 @@ func (cli *CLI) RunModule(moduleName string, args []string) {
 
 	duration := time.Since(startTime)
 
-	// Print output section
 	if result.Output != "" {
 		fmt.Println(core.NmapBox("Output"))
 		for _, line := range strings.Split(strings.TrimSpace(result.Output), "\n") {
@@ -144,7 +126,6 @@ func (cli *CLI) RunModule(moduleName string, args []string) {
 		fmt.Println()
 	}
 
-	// Print error section if exists
 	if result.Error != "" {
 		core.PrintError("Error Output:")
 		for _, line := range strings.Split(result.Error, "\n") {
@@ -155,12 +136,12 @@ func (cli *CLI) RunModule(moduleName string, args []string) {
 		fmt.Println()
 	}
 
-	// Print simple result log
-	fmt.Println()
 	if result.Success {
-		core.PrintSuccess(fmt.Sprintf("Completed in %s [exit: %d], success!", duration.String(), result.ExitCode))
+		core.PrintSuccess(fmt.Sprintf(
+			"Completed in %s [exit: %d]", duration, result.ExitCode))
 	} else {
-		core.PrintError(fmt.Sprintf("Failed in %s [exit: %d], skipping...", duration.String(), result.ExitCode))
+		core.PrintError(fmt.Sprintf(
+			"Failed in %s [exit: %d]", duration, result.ExitCode))
 	}
 	fmt.Println()
 }
@@ -473,41 +454,11 @@ func (cli *CLI) parseArguments(args []string) map[string]string {
 // expandValue expands variables and builtin function calls in a value
 // Supports: $varname, $(builtin_func arg1 arg2)
 func (cli *CLI) expandValue(value string) string {
-	// First, handle builtin function calls: $(func arg1 arg2)
-	value = cli.expandBuiltins(value)
 
 	// Then, handle variable expansion: $variable_name
 	value = cli.expandVariables(value)
 
 	return value
-}
-
-// expandBuiltins expands builtin function calls in $(func args) format
-func (cli *CLI) expandBuiltins(value string) string {
-	// Pattern: $(builtin_name arg1 arg2 ...)
-	builtinPattern := regexp.MustCompile(`\$\(([^)]+)\)`)
-
-	return builtinPattern.ReplaceAllStringFunc(value, func(match string) string {
-		// Extract content between $( and )
-		content := match[2 : len(match)-1]
-		parts := strings.Fields(content)
-
-		if len(parts) == 0 {
-			return match // Return original if empty
-		}
-
-		funcName := parts[0]
-		funcArgs := parts[1:]
-
-		// Execute builtin function
-		result, err := cli.builtins.Execute(funcName, funcArgs...)
-		if err != nil {
-			core.PrintWarning(fmt.Sprintf("Builtin function '%s' error: %v", funcName, err))
-			return match
-		}
-
-		return result
-	})
 }
 
 // expandVariables expands $variable_name references
