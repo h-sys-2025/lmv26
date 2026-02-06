@@ -2,14 +2,18 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 
 	"lanmanvan/core"
+
+	"gopkg.in/yaml.v3"
 )
 
 // CLI manages the interactive command-line interface
@@ -20,11 +24,10 @@ type CLI struct {
 	envMgr  *EnvironmentManager
 	logger  *Logger
 
-	//v1.5 #macros
-	macros        map[string]string
-	macroParams   map[string][]string
-	macroRequired map[string]map[string]bool
-	builtinMacros map[string]bool
+	// v2.0 more
+	currentModule    string
+	moduleVariables  map[string]string
+	currentDirectory string
 }
 
 // NewCLI creates a new CLI instance
@@ -36,12 +39,98 @@ func NewCLI(modulesDir string) *CLI {
 		envMgr:  NewEnvironmentManager(),
 		logger:  NewLogger(),
 
-		//v1.5
-		macros:        make(map[string]string),
-		macroParams:   make(map[string][]string),
-		macroRequired: make(map[string]map[string]bool),
-		builtinMacros: make(map[string]bool),
+		// v2.0: currentModule starts as empty (no module selected)
+		currentModule:    "",
+		moduleVariables:  make(map[string]string),
+		currentDirectory: "/tmp",
 	}
+}
+
+// v2.0
+// expandAtSignInGlobalAssignment replaces @NAME with the value of global variable NAME.
+// Example: "@ip" → "192.168.1.1" (if global ip=192.168.1.1)
+// If @NAME is not a valid global var, leaves it as literal "@NAME".
+func (cli *CLI) expandAtSignInGlobalAssignment(value string) string {
+	if !strings.HasPrefix(value, "@") {
+		return value
+	}
+
+	varName := value[1:] // remove '@'
+	if varName == "" {
+		return value // just "@", leave as-is
+	}
+
+	// Only allow simple @name (no spaces, no special chars)
+	// Match same rules as env var names: [a-zA-Z_][a-zA-Z0-9_]*
+	re := regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+	if !re.MatchString(varName) {
+		return value // invalid name, treat as literal
+	}
+
+	if val, exists := cli.envMgr.Get(varName); exists {
+		return val
+	}
+
+	// If not found, return original (e.g., "@missing" stays "@missing")
+	return value
+}
+func (cli *CLI) expandGlobalReferences(s string) string {
+	// Expand @name → global var
+	s = regexp.MustCompile(`@([a-zA-Z_][a-zA-Z0-9_]*)`).ReplaceAllStringFunc(s, func(match string) string {
+		name := match[1:]
+		if val, ok := cli.envMgr.Get(name); ok {
+			return val
+		}
+		return match // keep @name if not found
+	})
+
+	// Expand $name and ${name} → global var
+	s = regexp.MustCompile(`\$([a-zA-Z_][a-zA-Z0-9_]*)`).ReplaceAllStringFunc(s, func(match string) string {
+		name := match[1:]
+		if val, ok := cli.envMgr.Get(name); ok {
+			return val
+		}
+		return match
+	})
+
+	s = regexp.MustCompile(`\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}`).ReplaceAllStringFunc(s, func(match string) string {
+		name := match[2 : len(match)-1]
+		if val, ok := cli.envMgr.Get(name); ok {
+			return val
+		}
+		return match
+	})
+
+	return s
+}
+
+// expandGlobalVars replaces $VAR or ${VAR} with values from global envMgr
+func (cli *CLI) expandGlobalVars(input string) string {
+	// Handle $VAR (no braces)
+	reSimple := regexp.MustCompile(`\$([a-zA-Z_][a-zA-Z0-9_]*)`)
+	input = reSimple.ReplaceAllStringFunc(input, func(match string) string {
+		varName := match[1:] // skip '$'
+		if val, exists := cli.envMgr.Get(varName); exists {
+			return val
+		}
+		return match // leave unchanged if not found
+	})
+
+	// Handle ${VAR} (with braces)
+	reBraced := regexp.MustCompile(`\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}`)
+	input = reBraced.ReplaceAllStringFunc(input, func(match string) string {
+		varName := match[2 : len(match)-1] // extract from ${...}
+		if val, exists := cli.envMgr.Get(varName); exists {
+			return val
+		}
+		return match
+	})
+
+	return input
+}
+func (cli *CLI) moduleExists(name string) bool {
+	_, err := cli.manager.GetModule(name)
+	return err == nil
 }
 
 // Start begins the CLI loop
@@ -56,21 +145,11 @@ func (cli *CLI) Start(banner__ bool) error {
 	cli.setupSignalHandler()
 
 	///////////////////////////////////
-	// v1.5
+	// v2.0
 
 	// In your CLI initialization (NewCLI or similar):
-	cli.macros = make(map[string]string)
-	cli.macroParams = make(map[string][]string)
-	cli.macroRequired = make(map[string]map[string]bool)
-	cli.builtinMacros = map[string]bool{
-		"echo":   true,
-		"if":     true,
-		"else":   true,
-		"define": true,
-		"def":    true,
-	}
 
-	// END v1.5
+	// END v2.0
 
 	// Create readline instance with history support
 	rl, err := cli.getReadlineInstance()
@@ -146,211 +225,420 @@ func (cli *CLI) IdleStart(banner__ bool, command__ string) error {
 // ExecuteCommand processes user commands
 
 // handleBuiltinMacro returns true if the macro was handled (built-in), false otherwise
-func (cli *CLI) ExecuteCommand(input string) {
-	input = strings.TrimSpace(input)
-	if input == "" {
+func (cli *CLI) ExecuteCommand(inputx string) {
+	inputx = strings.TrimSpace(inputx)
+	if inputx == "" {
 		return
 	}
 
-	// 1. First: structured syntax commands that contain -> (for loops, etc.)
-	if strings.HasPrefix(input, "for ") &&
-		strings.Contains(input, " in ") &&
-		strings.Contains(input, " -> ") {
-
-		cli.executeForLoop(input)
-		return
-	}
-
-	// 2. Special prefixes: #proxychains and #sudo → run original command via idle executor with prefix
-	if strings.HasPrefix(input, "#proxychains ") || strings.HasPrefix(input, "#sudo ") {
-		prefix := ""
-		cmdPart := ""
-
-		if strings.HasPrefix(input, "#proxychains ") {
-			prefix = "proxychains "
-			cmdPart = strings.TrimSpace(input[len("#proxychains "):])
-		} else if strings.HasPrefix(input, "#sudo ") {
-			prefix = "sudo "
-			cmdPart = strings.TrimSpace(input[len("#sudo "):])
+	// ── Handle multiple commands separated by ; ─────────────────────────────
+	commands := strings.Split(inputx, ";")
+	for _, input := range commands {
+		input = strings.TrimSpace(input)
+		if input == "" {
+			continue
 		}
 
-		if cmdPart == "" {
-			core.PrintError("Missing command after #" + prefix[:len(prefix)-1])
+		// ── 1. Structured / script-like syntaxes (highest priority) ───────────────
+
+		// for ... in ... -> ...
+		if strings.HasPrefix(input, "for ") &&
+			strings.Contains(input, " in ") &&
+			strings.Contains(input, " -> ") {
+			cli.executeForLoop(input)
 			return
 		}
 
-		// The REAL command we want to run in background/idle mode
-		innerCommand := cmdPart
+		// #proxychains cmd
+		// #sudo cmd
+		if strings.HasPrefix(input, "#proxychains ") || strings.HasPrefix(input, "#sudo ") {
+			prefix := ""
+			cmdAndMod := ""
 
-		// Build the wrapper that uses idle-exec
-		wrapper := fmt.Sprintf(
-			`%s~/bin/lanmanvan -modules ~/lanmanvan/modules -idle-exec -idle-cmd %q`,
-			prefix,
-			innerCommand,
-		)
+			if strings.HasPrefix(input, "#proxychains ") {
+				prefix = "proxychains "
+				cmdAndMod = strings.TrimSpace(input[len("#proxychains "):])
+			} else if strings.HasPrefix(input, "#sudo ") {
+				prefix = "sudo "
+				cmdAndMod = strings.TrimSpace(input[len("#sudo "):])
+			}
 
-		core.PrintInfo("Executing in background/idle mode with prefix:")
-		fmt.Printf("  → %s\n\n", wrapper)
-
-		// Run the wrapper via shell (this should now work)
-		cli.ExecuteShellCommand(wrapper)
-		return
-	}
-
-	// 3. Output redirection > and >>  (only after special syntaxes!)
-	// We check for space before > or >> to reduce false positives
-	if strings.Contains(input, " > ") || strings.Contains(input, " >> ") ||
-		(strings.HasSuffix(input, ">") && !strings.HasSuffix(input, "->")) ||
-		(strings.HasSuffix(input, ">>")) {
-
-		// Find the LAST occurrence of > or >>
-		greaterPos := strings.LastIndex(input, ">>")
-		if greaterPos == -1 {
-			greaterPos = strings.LastIndex(input, ">")
-		}
-
-		if greaterPos > 0 {
-			cmd := strings.TrimSpace(input[:greaterPos])
-			redirectPart := strings.TrimSpace(input[greaterPos:])
-
-			fields := strings.Fields(redirectPart)
-			if len(fields) < 2 {
-				core.PrintError("Redirection syntax: command > file  or  command >> file")
+			if cmdAndMod == "" {
+				core.PrintError("Missing command after " + strings.TrimSpace(prefix[:len(prefix)-1]))
 				return
 			}
 
-			op := fields[0] // > or >>
-			filename := strings.Join(fields[1:], " ")
-			filename = strings.Trim(filename, "\"'")
+			// Parse out #mod=... from cmdAndMod
+			modPath := "~/lanmanvan/modules" // default
+			finalCmd := cmdAndMod
 
+			if strings.Contains(cmdAndMod, "#mod=") {
+				// Use regex to extract #mod=... (non-greedy, allow spaces in path? but usually none)
+				modRe := regexp.MustCompile(`\s*#mod=(\S+)`)
+				modMatches := modRe.FindStringSubmatch(cmdAndMod)
+				if len(modMatches) > 1 {
+					modPath = modMatches[1]
+					// Remove the #mod=... part from the command
+					finalCmd = modRe.ReplaceAllString(cmdAndMod, "")
+					finalCmd = strings.TrimSpace(finalCmd)
+				}
+			}
+
+			if finalCmd == "" {
+				core.PrintError("Command is empty after removing #mod")
+				return
+			}
+
+			// Construct the wrapper command
 			wrapper := fmt.Sprintf(
-				`lmv -idle-exec -idle-cmd %q %s %q`,
-				cmd,
-				op,
-				filename,
+				`%s~/bin/lanmanvan -modules %q -idle-exec -idle-cmd %q`,
+				prefix,
+				modPath,
+				finalCmd,
 			)
 
-			core.PrintInfo("Redirecting output via idle/background executor...")
+			core.PrintInfo("Executing in background/idle mode:")
 			fmt.Printf("  → %s\n\n", wrapper)
 
 			cli.ExecuteShellCommand(wrapper)
 			return
 		}
-	}
 
-	// env var set / view
-	if strings.Contains(input, "=") && !strings.Contains(input, " ") {
-		parts := strings.SplitN(input, "=", 2)
-		if len(parts) == 2 {
-			key := strings.TrimSpace(parts[0])
-			value := strings.TrimSpace(parts[1])
+		// Output redirection > and >>
+		if strings.Contains(input, " > ") || strings.Contains(input, " >> ") ||
+			(strings.HasSuffix(input, ">") && !strings.HasSuffix(input, "->")) ||
+			strings.HasSuffix(input, ">>") {
 
-			if value == "?" {
-				if val, exists := cli.envMgr.Get(key); exists {
-					fmt.Println()
-					fmt.Printf("   %s = %s\n", core.Color("cyan", key), core.Color("green", val))
-					fmt.Println()
+			greaterPos := strings.LastIndex(input, ">>")
+			if greaterPos == -1 {
+				greaterPos = strings.LastIndex(input, ">")
+			}
+
+			if greaterPos > 0 {
+				cmd := strings.TrimSpace(input[:greaterPos])
+				redirectPart := strings.TrimSpace(input[greaterPos:])
+
+				fields := strings.Fields(redirectPart)
+				if len(fields) < 2 {
+					core.PrintError("Redirection syntax: command > file  or  command >> file")
+					return
+				}
+
+				op := fields[0] // > or >>
+				filename := strings.Join(fields[1:], " ")
+				filename = strings.Trim(filename, "\"'")
+
+				wrapper := fmt.Sprintf(
+					`lmv -idle-exec -idle-cmd %q %s %q`,
+					cmd,
+					op,
+					filename,
+				)
+
+				core.PrintInfo("Redirecting output via idle/background executor...")
+				fmt.Printf("  → %s\n\n", wrapper)
+
+				cli.ExecuteShellCommand(wrapper)
+				return
+			}
+		}
+
+		// ── 2. Simple built-in printing commands ──────────────────────────────────
+
+		if strings.HasPrefix(input, "echo ") ||
+			strings.HasPrefix(input, "print ") {
+
+			content := ""
+			if strings.HasPrefix(input, "echo ") {
+				content = strings.TrimSpace(input[5:])
+			} else {
+				content = strings.TrimSpace(input[6:])
+			}
+
+			fmt.Println(content)
+			return
+		}
+
+		// ── 3. Variable operations ────────────────────────────────────────────────
+
+		// VAR=value  or  VAR=?
+		if strings.Contains(input, "=") && !strings.Contains(input, " ") {
+			parts := strings.SplitN(input, "=", 2)
+			if len(parts) == 2 {
+				key := strings.TrimSpace(parts[0])
+				value := strings.TrimSpace(parts[1])
+
+				if value == "?" {
+					if val, exists := cli.envMgr.Get(key); exists {
+						fmt.Printf("  %s = %s\n", core.Color("cyan", key), core.Color("green", val))
+					} else {
+						core.PrintWarning(fmt.Sprintf("Variable '%s' not set", key))
+					}
+					return
+				}
+
+				// 🔥 Expand @name: if in module, @name = module var; else = global var
+				expandedValue := value
+				if strings.HasPrefix(value, "@") && len(value) > 1 {
+					varName := value[1:]
+					// If a module is active, try module variable first
+					if cli.currentModule != "" {
+						if moduleVal, ok := cli.moduleVariables[varName]; ok {
+							expandedValue = moduleVal
+						} else {
+							// Optionally fall back to global? Or leave as @name?
+							// For safety, we fall back to global
+							if globalVal, ok := cli.envMgr.Get(varName); ok {
+								expandedValue = globalVal
+							}
+							// else: keep original @name (but unlikely)
+						}
+					} else {
+						// No module active → use global
+						if globalVal, ok := cli.envMgr.Get(varName); ok {
+							expandedValue = globalVal
+						}
+					}
+				}
+
+				if err := cli.envMgr.Set(key, expandedValue); err != nil {
+					core.PrintError(fmt.Sprintf("Failed to set variable: %v", err))
+					return
+				}
+
+				core.PrintSuccess(fmt.Sprintf("Set %s = %s", key, expandedValue))
+				return
+			}
+		}
+		// ── 4. Direct shell execution with $ prefix ───────────────────────────────
+
+		if strings.HasPrefix(input, "$") {
+			realCmd := strings.TrimSpace(input[1:])
+			cli.ExecuteShellCommand(realCmd)
+			return
+		}
+
+		// set / get
+
+		// ── 3b. @var → print module variable (only if module selected) ─────────────
+
+		if strings.HasPrefix(input, "@") && len(input) > 1 {
+			varName := strings.TrimSpace(input[1:])
+			if cli.currentModule == "" {
+				core.PrintError("No module selected. Use 'use <module>' first.")
+				return
+			}
+			if val, ok := cli.moduleVariables[varName]; ok {
+				fmt.Println(val)
+			} else {
+				core.PrintWarning(fmt.Sprintf("Module variable '@%s' not set.", varName))
+			}
+			return
+		}
+
+		// ── 5. Built-in commands & module execution ───────────────────────────────
+
+		parts := strings.Fields(input)
+		if len(parts) == 0 {
+			return
+		}
+
+		cmdName := parts[0]
+		args := parts[1:]
+
+		switch cmdName {
+		case "help", "h", "?":
+			cli.PrintHelp()
+
+		case "list", "ls", "modules":
+			cli.ListModules()
+
+		case "search":
+			if len(args) == 0 {
+				core.PrintError("Usage: search <keyword>")
+				return
+			}
+			cli.SearchModules(strings.Join(args, " "))
+
+		case "info":
+			if len(args) == 0 {
+				if cli.currentModule == "" {
+					core.PrintError("Usage: info <module>  OR  select a module with 'use <module>' and run 'info'")
+					return
+				}
+				// Show info for currently selected module
+				cli.ShowModuleInfo(cli.currentModule, 1)
+				return
+			}
+			// Show info for explicitly given module
+			cli.ShowModuleInfo(args[0], 1)
+			return
+
+		case "use":
+			if len(args) == 0 {
+				if cli.currentModule != "" {
+					core.PrintInfo(fmt.Sprintf("Currently using module: %s", core.Color("cyan", cli.currentModule)))
 				} else {
-					core.PrintWarning(fmt.Sprintf("Variable '%s' not set", key))
-					fmt.Println()
+					core.PrintInfo("No module currently selected.")
 				}
 				return
 			}
 
-			if err := cli.envMgr.Set(key, value); err != nil {
-				core.PrintError(fmt.Sprintf("Failed to set variable: %v", err))
+			moduleName := args[0]
+
+			// Validate module exists
+			if !cli.moduleExists(moduleName) {
+				core.PrintError(fmt.Sprintf("Module '%s' not found. Use 'list' to see available modules.", moduleName))
 				return
 			}
 
-			fmt.Println()
-			core.PrintSuccess(fmt.Sprintf("Set %s = %s", key, value))
-			fmt.Println()
+			cli.currentModule = moduleName
+			core.PrintSuccess(fmt.Sprintf("Using module: %s", core.Color("cyan", moduleName)))
 			return
-		}
-	}
 
-	// 6. Shell command ($ prefix)
-	if strings.HasPrefix(input, "$") {
-		cli.ExecuteShellCommand(input)
-		return
-	}
+		case "set":
+			if cli.currentModule == "" {
+				core.PrintError("No module selected. Use 'use <module>' first.")
+				return
+			}
 
-	// 7. Regular commands / modules
-	parts := strings.Fields(input)
-	if len(parts) == 0 {
-		return
-	}
+			if len(args) == 0 {
+				// List module variables
+				if len(cli.moduleVariables) == 0 {
+					core.PrintInfo("No variables set for module '" + cli.currentModule + "'.")
+				} else {
+					core.PrintInfo("Module variables for '" + cli.currentModule + "':")
+					for k, v := range cli.moduleVariables {
+						fmt.Printf("  %s = %s\n", core.Color("cyan", k), core.Color("green", v))
+					}
+				}
+				return
+			}
 
-	cmd := parts[0]
-	args := parts[1:]
+			if len(args) < 2 {
+				core.PrintError("Usage: set <name> <value>")
+				return
+			}
 
-	switch cmd {
-	case "help", "h", "?":
-		cli.PrintHelp()
-	case "list", "ls":
-		cli.ListModules()
-	case "env", "envs":
-		cli.envMgr.Display()
-	case "search":
-		if len(args) > 0 {
-			cli.SearchModules(strings.Join(args, " "))
-		} else {
-			core.PrintError("Usage: search <keyword>")
-		}
-	case "info":
-		if len(args) > 0 {
-			cli.ShowModuleInfo(args[0], 1)
-		} else {
-			core.PrintError("Usage: info <module>")
-		}
-	case "run":
-		if len(args) > 0 {
-			cli.RunModule(args[0], args[1:])
-		} else {
-			core.PrintError("Usage: run <module> [args...]")
-		}
-	case "create", "new":
-		if len(args) > 0 {
+			key := args[0]
+
+			rawValue := strings.Join(args[1:], " ")
+
+			// Expand @name → global env var, and $name → global env var
+			expandedValue := cli.expandGlobalReferences(rawValue)
+
+			cli.moduleVariables[key] = expandedValue
+			core.PrintSuccess(fmt.Sprintf("Set %s = %s", core.Color("cyan", key), core.Color("green", expandedValue)))
+
+			return
+
+		case "run":
+			if cli.currentModule == "" {
+				core.PrintError("No module selected. Use 'use <module>' first, or run explicitly: run <module> [args...]")
+				return
+			}
+
+			// Build final args list: start with module defaults, then apply overrides
+			finalArgs := make([]string, 0)
+
+			// Add all current module variables as key=value
+			for k, v := range cli.moduleVariables {
+				finalArgs = append(finalArgs, k+"="+v)
+			}
+
+			// Override with command-line args (e.g., run url=...)
+			for _, arg := range args {
+				if strings.Contains(arg, "=") {
+					// Extract key to allow override
+					parts := strings.SplitN(arg, "=", 2)
+					key := parts[0]
+					// Remove existing key from finalArgs (to avoid duplicates)
+					newFinal := make([]string, 0)
+					for _, a := range finalArgs {
+						if !strings.HasPrefix(a, key+"=") {
+							newFinal = append(newFinal, a)
+						}
+					}
+					finalArgs = newFinal
+					// Add new override
+					finalArgs = append(finalArgs, arg)
+				} else {
+					// Not a key=value? Pass through (maybe your module supports positional args)
+					finalArgs = append(finalArgs, arg)
+				}
+			}
+
+			// Run the current module with merged args
+			cli.RunModule(cli.currentModule, finalArgs)
+			return
+
+		case "create", "new":
+			if len(args) == 0 {
+				core.PrintError("Usage: create <name> [python|bash|go]")
+				return
+			}
 			cli.CreateModule(args[0], args[1:])
-		} else {
-			core.PrintError("Usage: create <name> [python|bash]")
-		}
-	case "edit":
-		if len(args) > 0 {
-			cli.EditModule(args[0])
-		} else {
-			core.PrintError("Usage: edit <module>")
-		}
-	case "delete", "remove", "rm":
-		if len(args) > 0 {
-			cli.DeleteModule(args[0])
-		} else {
-			core.PrintError("Usage: delete <module>")
-		}
-	case "history":
-		cli.PrintHistory()
-	case "clear", "cls":
-		cli.ClearScreen()
-	case "refresh", "reload":
-		cli.RefreshModules()
-	case "exit", "quit", "q":
-		cli.running = false
-		fmt.Println()
-		core.PrintSuccess("Goodbye! See you next time.")
-		fmt.Println()
-		return
 
-	default:
-		// Quick module info: module!
-		if strings.HasSuffix(cmd, "!") {
-			moduleName := strings.TrimSuffix(cmd, "!")
-			cli.ShowModuleInfo(moduleName, 0)
-		} else {
-			// Try to run as module
-			cli.RunModule(cmd, args)
+		case "edit":
+			if len(args) == 0 {
+				core.PrintError("Usage: edit <module>")
+				return
+			}
+			cli.EditModule(args[0])
+
+		case "delete", "rm", "remove":
+			if len(args) == 0 {
+				core.PrintError("Usage: delete <module>")
+				return
+			}
+			cli.DeleteModule(args[0])
+
+		case "env", "envs":
+			cli.envMgr.Display()
+
+		case "history":
+			cli.PrintHistory()
+
+		case "clear", "cls":
+			cli.ClearScreen()
+
+		case "refresh", "reload":
+			cli.RefreshModules()
+
+		case "exit", "quit", "q":
+			cli.running = false
+			fmt.Println()
+			core.PrintSuccess("Goodbye! See you next time.")
+			return
+
+		default:
+			// Handle "!" -> show info for current module
+			if cmdName == "!" {
+				if cli.currentModule == "" {
+					core.PrintError("No active module selected. Use 'use <module>' first.")
+					return
+				}
+				cli.ShowModuleInfo(cli.currentModule, 0)
+				return
+			}
+
+			// Handle "modname!" -> show info for that module
+			if strings.HasSuffix(cmdName, "!") {
+				moduleName := strings.TrimSuffix(cmdName, "!")
+				cli.ShowModuleInfo(moduleName, 0)
+				return
+			}
+
+			// Try as module first → fallback to system shell
+			if !cli.RunModule(cmdName, args) {
+				cli.ExecuteShellCommand(input)
+			}
 		}
 	}
 }
+
+// ExecuteShellCommand runs the command through the real shell,
+// allowing full shell syntax: $VAR, ${VAR}, $(command), `cmd`, *, ~, &&, ||, etc.
 
 // GetModuleManager returns the module manager instance
 func (cli *CLI) GetModuleManager() *core.ModuleManager {
@@ -421,31 +709,49 @@ type Iterator interface {
 }
 
 func (cli *CLI) executeForLoop(input string) {
-	// Supported syntaxes:
-	// for $x in 1..100 -> command
-	// for x in a..z -> command
-	// for ip in 192.168.1.1..192.168.1.50 -> ping $ip
-	// for c in a..z+A..Z+0..9 -> echo $c
-	// for user in admin|root|guest -> hydra -l $user ...
-
 	input = strings.TrimSpace(input)
 
-	// Flexible regex - supports both $var and var
+	// Match: for [var] in ... -> command
 	re := regexp.MustCompile(`(?i)^for\s+(?:\$?(\w+))\s+(?:in\s+)?(.+?)\s*[-=]{1,2}>\s*(.+)$`)
 	matches := re.FindStringSubmatch(input)
 	if len(matches) != 4 {
-		core.PrintError("Invalid for-loop syntax.\nExamples:\n  for $x in 1..100 -> echo $x\n  for ip in 192.168.1.1..50 -> ping $ip\n  for c in a..z+A..Z -> echo $c")
+		core.PrintError("Invalid for-loop syntax.\nExamples:\n  for $x in 1..100 -> echo $x\n  for ip in 192.168.1.1..50 -> ping $ip\n  for url in $cat(\"urls.txt\") -> curl $url")
 		return
 	}
 
 	varName := matches[1]
-	source := strings.TrimSpace(matches[2])
-	command := strings.TrimSpace(matches[3])
+	sourceExpr := strings.TrimSpace(matches[2])
+	commandTemplate := strings.TrimSpace(matches[3])
 
-	iter, err := parseRangeSource(source)
+	// Check if source is $cat("...")
+	catRe := regexp.MustCompile(`^\$cat\(\s*["']([^"']+)["']\s*\)$`)
+	catMatches := catRe.FindStringSubmatch(sourceExpr)
+	if len(catMatches) == 2 {
+		filePath := catMatches[1]
+		// Expand ~
+		if strings.HasPrefix(filePath, "~/") {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				core.PrintError("Cannot expand ~: " + err.Error())
+				return
+			}
+			filePath = filepath.Join(home, filePath[2:])
+		}
+
+		data, err := cli.loadStructuredData(filePath)
+		if err != nil {
+			core.PrintError("Failed to load data: " + err.Error())
+			return
+		}
+
+		cli.runLoopOverData(varName, data, commandTemplate)
+		return
+	}
+
+	// Fallback: original range-based iteration (1..100, a..z, etc.)
+	iter, err := parseRangeSource(sourceExpr)
 	if err != nil {
-		E_msg := "Cannot parse range: " + err.Error() + "\nSource was: " + source + ""
-		core.PrintError(E_msg)
+		core.PrintError(fmt.Sprintf("Cannot parse range: %v\nSource was: %s", err, sourceExpr))
 		return
 	}
 	defer iter.Close()
@@ -457,7 +763,7 @@ func (cli *CLI) executeForLoop(input string) {
 	}
 
 	fmt.Println()
-	core.PrintInfo(fmt.Sprintf("Loop: %s ∈ %s  (%d items)", varName, source, total))
+	core.PrintInfo(fmt.Sprintf("Loop: %s ∈ %s  (%d items)", varName, sourceExpr, total))
 	fmt.Println()
 
 	results := []string{}
@@ -470,11 +776,8 @@ func (cli *CLI) executeForLoop(input string) {
 		}
 		count++
 
-		// Support both $var and ${var}
 		expanded := regexp.MustCompile(`\$\{`+regexp.QuoteMeta(varName)+`\}|\$`+regexp.QuoteMeta(varName)).
-			ReplaceAllString(command, value)
-
-		fmt.Printf("  [%3d/%3d] → %s\n", count, total, expanded)
+			ReplaceAllString(commandTemplate, value)
 
 		var result string
 		if strings.Contains(expanded, "|>") {
@@ -489,12 +792,146 @@ func (cli *CLI) executeForLoop(input string) {
 
 	if len(results) > 0 {
 		fmt.Println()
-		core.PrintSuccess("Collected results (" + string(len(results)) + "):")
+		core.PrintSuccess(fmt.Sprintf("Collected results (%d):", len(results)))
 		for i, res := range results {
 			fmt.Printf("  [%2d] %s\n", i+1, strings.TrimSpace(res))
 		}
 		fmt.Println()
 	}
+}
+
+// loadStructuredData loads .txt, .json, .yaml
+func (cli *CLI) loadStructuredData(path string) ([]interface{}, error) {
+	ext := strings.ToLower(filepath.Ext(path))
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read file: %w", err)
+	}
+
+	switch ext {
+	case ".txt":
+		lines := strings.Split(string(data), "\n")
+		var items []interface{}
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line != "" {
+				items = append(items, line)
+			}
+		}
+		return items, nil
+
+	case ".json":
+		var parsed interface{}
+		if err := json.Unmarshal(data, &parsed); err != nil {
+			return nil, fmt.Errorf("parse JSON: %w", err)
+		}
+		// Ensure it's a list
+		if list, ok := parsed.([]interface{}); ok {
+			return list, nil
+		}
+		return nil, fmt.Errorf("JSON must be an array")
+
+	case ".yaml", ".yml":
+		var parsed interface{}
+		if err := yaml.Unmarshal(data, &parsed); err != nil {
+			return nil, fmt.Errorf("parse YAML: %w", err)
+		}
+		if list, ok := parsed.([]interface{}); ok {
+			return list, nil
+		}
+		return nil, fmt.Errorf("YAML must be an array")
+
+	default:
+		return nil, fmt.Errorf("unsupported file type: %s (use .txt, .json, .yaml, .yml)", ext)
+	}
+}
+
+// runLoopOverData handles both simple and structured items
+func (cli *CLI) runLoopOverData(varName string, items []interface{}, commandTemplate string) {
+	if len(items) == 0 {
+		core.PrintWarning("No data loaded – nothing to do")
+		return
+	}
+
+	fmt.Println()
+	core.PrintInfo(fmt.Sprintf("Loop: %s ∈ $cat(...)  (%d items)", varName, len(items)))
+	fmt.Println()
+
+	results := []string{}
+
+	for _, item := range items {
+		// Prepare substitution context
+		var expanded string
+
+		switch v := item.(type) {
+		case string:
+			// Simple: replace $var and ${var}
+			expanded = regexp.MustCompile(`\$\{`+regexp.QuoteMeta(varName)+`\}|\$`+regexp.QuoteMeta(varName)).
+				ReplaceAllString(commandTemplate, v)
+
+		case map[interface{}]interface{}:
+			// YAML often uses interface{} keys → convert to string-keyed map
+			strMap := make(map[string]interface{})
+			for k, val := range v {
+				if ks, ok := k.(string); ok {
+					strMap[ks] = val
+				}
+			}
+			expanded = cli.expandStructuredCommand(varName, strMap, commandTemplate)
+
+		case map[string]interface{}:
+			expanded = cli.expandStructuredCommand(varName, v, commandTemplate)
+
+		default:
+			// Fallback: treat as string via fmt.Sprint
+			valStr := fmt.Sprintf("%v", v)
+			expanded = regexp.MustCompile(`\$\{`+regexp.QuoteMeta(varName)+`\}|\$`+regexp.QuoteMeta(varName)).
+				ReplaceAllString(commandTemplate, valStr)
+		}
+
+		// Execute
+		var result string
+		if strings.Contains(expanded, "|>") {
+			result = cli.executePipedCommandsForLoop(expanded)
+			if result != "" {
+				results = append(results, result)
+			}
+		} else {
+			cli.ExecuteCommand(expanded)
+		}
+	}
+
+	if len(results) > 0 {
+		fmt.Println()
+		core.PrintSuccess(fmt.Sprintf("Collected results (%d):", len(results)))
+		for i, res := range results {
+			fmt.Printf("  [%2d] %s\n", i+1, strings.TrimSpace(res))
+		}
+		fmt.Println()
+	}
+}
+
+// expandStructuredCommand replaces $(var->field) with values
+func (cli *CLI) expandStructuredCommand(varName string, data map[string]interface{}, cmd string) string {
+	// Regex: $(varname->fieldname)
+	re := regexp.MustCompile(`\$\(` + regexp.QuoteMeta(varName) + `->([a-zA-Z_][a-zA-Z0-9_]*)\)`)
+
+	expanded := re.ReplaceAllStringFunc(cmd, func(match string) string {
+		submatches := re.FindStringSubmatch(match)
+		if len(submatches) < 2 {
+			return match
+		}
+		field := submatches[1]
+		if val, exists := data[field]; exists {
+			return fmt.Sprintf("%v", val)
+		}
+		return "" // or keep placeholder? safer to blank
+	})
+
+	// Also support plain $var = whole JSON object as string (optional)
+	// But usually not needed — skip unless requested
+
+	return expanded
 }
 
 // parseRangeSource returns an iterator for different kinds of ranges
@@ -575,7 +1012,7 @@ func (it *chainIterator) Close() error {
 }
 
 // ────────────────────────────────────────────────────────────────────────────────
-// IP Range Iterator (full IPs: 192.168.1.1 .. 192.168.1.50)
+// IP Range Iterator (full IPs: 192.168.1.1 .. 192.168.2.00)
 // ────────────────────────────────────────────────────────────────────────────────
 
 type ipRangeIterator struct {
@@ -637,7 +1074,7 @@ func ipToInt(ip net.IP) int64 {
 }
 
 // ────────────────────────────────────────────────────────────────────────────────
-// Partial IP Range (last octet only)  e.g. 192.168.1.10..192.168.1.50
+// Partial IP Range (last octet only)  e.g. 192.168.1.10..192.168.2.00
 // ────────────────────────────────────────────────────────────────────────────────
 
 type partialIPRangeIterator struct {

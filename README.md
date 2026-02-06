@@ -1,127 +1,92 @@
-# LanManVan Framework
+# LanManVan Framework v2.0
 
-# this project is continued here: https://github.com/Lanmanvan-Org/lmv-suite-ng
-# [lmv-suite-ng](https://github.com/Lanmanvan-Org/lmv-suite-ng)
+A lightweight, Metasploit-inspired modular framework written in Go.  
+Supports modules written in **Python 3** and **Bash**.
 
----
+[official website](http://lmv-ng.vercel.app/)
 
-## old, v1.5: new is here: https://github.com/Lanmanvan-Org/lmv-suite-ng
+### Known bugs and fixes: (Important):
 
-LanManVan is a **Metasploit-like framework** built in Go, designed to make it easy to create, manage, and execute modules. The framework supports modules written in **Python3** and **Bash**, allowing you to create powerful security tools with minimal effort.
+- Commands such as `#proxcychains` and `#sudo` will not work when using a module, refer to use a module liek this instead: example: `ip-geolocation ip=154.32.32.32`,
+or `run xss-test url=$url`.
 
-### Partly VibeCoded: 65% Human written code, 35% AI!
+## Main Features
 
-## Features
-
-✨ **Easy Module Creation** - Create modules in Python3 or Bash  
-🚀 **Command-Line Interface** - Interactive shell-like interface  
-📦 **Modular Design** - Load and execute modules on demand  
-🔧 **Flexible Arguments** - Pass arguments like normal bash commands  
-📝 **YAML Metadata** - Module configuration and documentation  
-🎯 **Real-time Execution** - Execute modules with instant feedback  
-🌐 **Network Tools** - Built-in examples for scanning, hashing, shells
+- Simple module creation (Python 3 / Bash)
+- Interactive command-line interface
+- Dynamic module loading
+- Flexible argument passing
+- YAML-based module metadata
+- Built-in environment variable support for arguments
+- Real-time execution with clear output
 
 ## Installation
 
-```bash
-cd lanmanvan
-go mod tidy
-go build -o lanmanvan main.go
-```
-
-### OR
-
-```bash
-chmod +x ./setup.sh
+```sh
+gh repo clone Lanmanvan-Org/lmv-suite-ng
+cd lmv-suite-ng
 ./setup.sh
 ```
 
-## Quick Start
+### Or from source
+```sh
+go mod tidy
+go build -o lmv main.go
+```
 
-### Running the Framework
+Alternative (one-liner setup):
 
-```bash
+```sh
+chmod +x ./setup.sh && ./setup.sh
+```
+
+## Basic Usage
+
+```sh
+lmv -banner  # to show banner
+```
+[welcome](./media/intro.png)
+
+### Or
+
+```sh
 ./lanmanvan
 ```
 
-Or specify a custom modules directory:
+or with custom modules path:
 
-```bash
-./lanmanvan -modules ./my_modules
+```sh
+./lanmanvan -modules ./custom_modules
 ```
 
-### Available Commands
+---
 
-```
-
-
-██╗      █████╗ ███╗   ██╗███╗   ███╗ █████╗ ███╗   ██╗██╗   ██╗ █████╗ ███╗   ██╗
-██║     ██╔══██╗████╗  ██║████╗ ████║██╔══██╗████╗  ██║██║   ██║██╔══██╗████╗  ██║
-██║     ███████║██╔██╗ ██║██╔████╔██║███████║██╔██╗ ██║██║   ██║███████║██╔██╗ ██║
-██║     ██╔══██║██║╚██╗██║██║╚██╔╝██║██╔══██║██║╚██╗██║╚██╗ ██╔╝██╔══██║██║╚██╗██║
-███████╗██║  ██║██║ ╚████║██║ ╚═╝ ██║██║  ██║██║ ╚████║ ╚████╔╝ ██║  ██║██║ ╚████║
-╚══════╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝  ╚═══╝  ╚═╝  ╚═╝╚═╝  ╚═══╝
-
-
-╔═════════════════════════════════════════════════════════════════╗
-║   ✦ LANMANVAN v2.0 - Advanced Modular Tooling Framework ✦       ║
-║   Go Core | Python3/Bash Modules | Dynamic UI | Security Tools  ║
-╚═════════════════════════════════════════════════════════════════╝
-
-Type 'help' for available commands
-
-hmza@0root ❯ help
-
-Available Commands:
-
-  help, h, ?                Show this help message, aliases: h, ?
-  list, ls                  List all modules, aliases: ls
-  search <keyword>          Search modules by name/tag, example: search network
-  info <module>             Show detailed module information, example: info network
-  <module>!                 Quick show module options and usage, example: network!
-  run <module> [args]       Execute a module with arguments, example: run network ip=
-  <module> [args]           Shorthand: <module> arg_key=value, example: network ip=192.168.1.1
-  <module> arg_key = value  Format with spaces (alternative), example: network ip = 192.168.1.1
-  env, envs                 Show all global environment variables, aliases: envs
-  key=value                 Set global environment variable (persistent), example: timeout=10
-  key=?                     View global environment variable value, example: timeout=?
-  create <name> [type]      Create a new module (python/bash), example: create mymodule python
-  edit <module>             Edit module files, example: edit mymodule
-  delete <module>           Delete a module, example: delete mymodule
-  history                   Show command history
-  clear                     Clear screen, aliases: cls
-  exit, quit, q             Exit framework, aliases: quit, q
-
-hmza@0root ❯  
-```
+## Help
+[help](./media/help1.png)
+[search](./media/search1.png)
 
 ## Using Modules
 
 ### List Available Modules
 
-```
-user@host$ list
-```
+[list modules](./media/list1.png)
 
 ### Get Module Information
 
-```
-user@host$ info portscan
-```
+[list modules](./media/info1.png)
+[!](./media/!.png)
 
 ### Run a Module
 
-```
-user@host$ run portscan host=192.168.1.1 ports=80,443,22
-```
+[run a module](./media/run1.png)
 
 Or use shorthand:
 
-```
-user@host$ portscan host=192.168.1.1 ports=80,443,22
-```
+[run a module using var](./media/run2.png)
 
-## Creating Modules
+---
+
+## Creating custom Modules
 
 ### Python3 Module Structure
 
@@ -401,3 +366,4 @@ For issues, questions, or contributions, feel free to reach out!
 <a href="https://github.com/hmZa-Sfyn/lanmanvan/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=hmZa-Sfyn/lanmanvan" />
 </a>
+
