@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"lanmanvan/core"
+	"lmv26/core"
 
 	"github.com/fatih/color"
 )

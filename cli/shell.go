@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"lanmanvan/core"
+	"lmv26/core"
 )
 
 // ExecuteShellCommand executes a shell command

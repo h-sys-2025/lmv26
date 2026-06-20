@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"lanmanvan/core"
+	"lmv26/core"
 )
 
 // RunModule executes a module with provided arguments

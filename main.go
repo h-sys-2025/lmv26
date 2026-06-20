@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"lanmanvan/cli"
+	"lmv26/cli"
 )
 
 func main() {

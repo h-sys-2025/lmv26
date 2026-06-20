@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"lanmanvan/core"
+	"lmv26/core"
 )
 
 // EnvironmentManager handles global environment variables

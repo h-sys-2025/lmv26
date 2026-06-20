@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"lanmanvan/core"
+	"lmv26/core"
 
 	"gopkg.in/yaml.v3"
 )
@@ -269,7 +269,7 @@ func (cli *CLI) ExecuteCommand(inputx string) {
 			}
 
 			// Parse out #mod=... from cmdAndMod
-			modPath := "~/lanmanvan/modules" // default
+			modPath := "~/lmv26/modules" // default
 			finalCmd := cmdAndMod
 
 			if strings.Contains(cmdAndMod, "#mod=") {

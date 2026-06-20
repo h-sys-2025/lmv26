@@ -24,9 +24,10 @@ def is_module_dir(path):
     # Check for module.yaml
     if os.path.exists(os.path.join(path, "module.yaml")):
         return True
+        
     # Check for known module files
     for f in os.listdir(path):
-        if f.endswith((".py", ".sh", ".go")) and os.path.isfile(os.path.join(path, f)):
+        if f.endswith((".py", ".sh")) and os.path.isfile(os.path.join(path, f)): # edit: remove `.go`, .go is not stable!
             return True
     return False
 
@@ -34,7 +35,7 @@ def list_modules_recursive(base_path, namespace=""):
     """Recursively list all modules with namespace support"""
     modules = []
     
-    if not os.path.exists(base_path):
+    if not os.path.exists(base_path): # file does not exist, so we return `[]`.
         return modules
     
     try:
@@ -59,24 +60,24 @@ def list_modules_recursive(base_path, namespace=""):
 
 def clone_repo(url, tmp_dir):
     try:
-        subprocess.run(["git", "clone", "--quiet", url, tmp_dir], check=True)
+        subprocess.run(["git", "clone", "--quiet", "--depth=1", url, tmp_dir], check=True) # edit: adds `--depth=1` to make sure that only latest data is cloned.
         return True
     except subprocess.CalledProcessError:
         return False
 
 def main():
-    parser = argparse.ArgumentParser(description="LanManVan Module Manager")
+    parser = argparse.ArgumentParser(description="LanManVan Module Manager : lmv26")
     subparsers = parser.add_subparsers(dest="command")
 
     install_parser = subparsers.add_parser("install", help="Install modules from repo")
-    install_parser.add_argument("repo", help="Repo name or URL (repo=<name|url>)")
+    install_parser.add_argument("repo", help="Repo name or URL (repo=<name|url>). Please use url for best results!")
 
     remove_parser = subparsers.add_parser("remove", help="Remove modules by pattern")
-    remove_parser.add_argument("name", help="Module name pattern (name=<pattern>)")
+    remove_parser.add_argument("name", help="Module name pattern (name=<pattern>). This will remove modles and their .git data.")
 
-    subparsers.add_parser("list", help="List installed modules")
+    subparsers.add_parser("list", help=f"List installed modules. Path: `{MODULES_DIR}`.")
 
-    subparsers.add_parser("help", help="Show help")
+    subparsers.add_parser("help", help="Show this help message.")
 
     if len(sys.argv) == 1:
         parser.print_help()
@@ -103,7 +104,7 @@ def main():
         repos = load_repos()
         url = repos.get(repo_input) if repo_input in repos else repo_input
         if not url.startswith("http"):
-            print("[✗] Invalid repo or URL")
+            print("[x] Invalid repo or URL")
             sys.exit(1)
 
         name = url.split("/")[-1].replace(".git", "")
@@ -112,7 +113,7 @@ def main():
 
         print(f"[+] Cloning {url}...")
         if not clone_repo(url, tmp_dir):
-            print("[✗] Failed to clone repo")
+            print("[x] Failed to clone repo")
             shutil.rmtree(tmp_dir)
             sys.exit(1)
 
